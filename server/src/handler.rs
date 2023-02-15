@@ -1,50 +1,120 @@
-use std::{fs::File, io::Write, process::Command};
+use std::io::Write;
+use std::process::Output;
+use std::{fs::File, process::Command};
 
-use axum::Json;
-use serde::Deserialize;
+#[allow(unused_imports)]
+use axum::{http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
 use tempfile::tempdir;
+use thiserror::Error;
 
-#[derive(Debug, Deserialize)]
-pub struct CompileAndRunPayload {
-    pub code: String,
+#[derive(Debug, Serialize)]
+pub struct GenericCommandResponse {
+    status: String,
+    stdout: Option<String>,
+    stderr: Option<String>,
 }
 
-pub async fn handle_compile(Json(payload): Json<CompileAndRunPayload>) -> String {
-    let CompileAndRunPayload { code } = payload;
+#[allow(unused)]
+#[derive(Debug, Error)]
+pub enum ExecuteAndCompileError {
+    #[error("unknown error")]
+    UnknownError,
+}
+
+#[derive(Debug, Deserialize)]
+pub enum CompileTarget {
+    CASM,
+    SIERRA,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompileRequest {
+    code: String,
+    #[allow(unused)]
+    target: CompileTarget,
+}
+
+pub async fn handle_compile(Json(body): Json<CompileRequest>) -> Json<GenericCommandResponse> {
+    let CompileRequest { code, .. } = body;
 
     let dir = tempdir().unwrap();
+    let cairo_path = dir.path().join("source_code.cairo");
 
-    let file_path = dir.path().join("to_compile.cairo");
-    let mut file = File::create(file_path.clone()).unwrap();
-    writeln!(file, "{code}").unwrap();
+    let mut cairo_file = File::create(cairo_path.clone()).unwrap();
+    writeln!(cairo_file, "{}", code).unwrap();
 
-    let path_str = file_path.to_str().unwrap();
-
-    let output = Command::new("./target/release/cairo-compile")
+    let Output {
+        status,
+        stderr,
+        stdout,
+    } = Command::new("./target/release/cairo-compile")
         .current_dir("../cairo")
-        .args([path_str])
+        .args([cairo_path.to_str().unwrap()])
         .output()
         .expect("unable to run cairo-compile");
 
-    String::from_utf8(output.stdout).unwrap()
+    if status.success() {
+        Json(GenericCommandResponse {
+            stderr: None,
+            status: status.to_string(),
+            stdout: std::string::String::from_utf8(stdout).ok(),
+        })
+    } else {
+        Json(GenericCommandResponse {
+            stdout: None,
+            status: status.to_string(),
+            stderr: std::string::String::from_utf8(stderr).ok(),
+        })
+    }
 }
 
-pub async fn handle_run(Json(payload): Json<CompileAndRunPayload>) -> String {
-    let CompileAndRunPayload { code } = payload;
+#[derive(Debug, Deserialize)]
+pub struct ExecuteRequest {
+    code: String,
+    available_gas: Option<String>,
+}
 
+pub async fn handle_execute(Json(body): Json<ExecuteRequest>) -> Json<GenericCommandResponse> {
+    let ExecuteRequest {
+        code,
+        available_gas,
+    } = body;
+
+    // create temp file to store the source code
     let dir = tempdir().unwrap();
+    let cairo_path = dir.path().join("source_code.cairo");
 
-    let file_path = dir.path().join("to_compile.cairo");
-    let mut file = File::create(file_path.clone()).unwrap();
-    writeln!(file, "{code}").unwrap();
+    let mut cairo_file = File::create(cairo_path.clone()).unwrap();
+    writeln!(cairo_file, "{}", code).unwrap();
 
-    let path_str = file_path.to_str().unwrap();
+    let mut compile = Command::new("./target/release/cairo-run");
 
-    let output = Command::new("./target/release/cairo-run")
-        .current_dir("../cairo")
-        .args(["-p", path_str])
-        .output()
-        .expect("unable to run cairo-run");
+    let output = if let Some(gas) = available_gas {
+        compile
+            .current_dir("../cairo")
+            .args(["-p", cairo_path.to_str().unwrap(), "--available-gas", &gas])
+            .output()
+            .expect("unable to run cairo-run")
+    } else {
+        compile
+            .current_dir("../cairo")
+            .args(["-p", cairo_path.to_str().unwrap()])
+            .output()
+            .expect("unable to run cairo-run")
+    };
 
-    String::from_utf8(output.stdout).unwrap()
+    if output.status.success() {
+        Json(GenericCommandResponse {
+            stderr: None,
+            status: output.status.to_string(),
+            stdout: std::string::String::from_utf8(output.stdout).ok(),
+        })
+    } else {
+        Json(GenericCommandResponse {
+            stdout: None,
+            status: output.status.to_string(),
+            stderr: std::string::String::from_utf8(output.stderr).ok(),
+        })
+    }
 }
