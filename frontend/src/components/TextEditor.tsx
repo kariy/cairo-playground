@@ -5,7 +5,16 @@ interface Props {
 }
 
 const TextEditor: Component<Props> = function (props) {
-	return <div>text editor</div>;
+	return (
+		<textarea
+			class="h-full flex-[3] resize-none outline-none p-2 font-mono text-[0.92rem] tracking-[-0.02rem]"
+			onInput={(e) => {
+				props.onChange(e.currentTarget.value);
+			}}
+		>
+			text editor
+		</textarea>
+	);
 };
 
 export default TextEditor;
